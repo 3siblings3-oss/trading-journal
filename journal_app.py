@@ -216,95 +216,141 @@ with tab1:
                     st.error("계좌 선택, 가격 입력, 매수 수량 > 0 이어야 합니다.")
 
 # === TAB 2: ACTIVE TRADES ===
+# === TAB 2: ACTIVE TRADES ===
 with tab2:
     col_header, col_btn = st.columns([4, 1])
     col_header.subheader("보유 중인 포지션")
     if col_btn.button("🔄 시세 갱신"):
-        st.cache_data.clear() # Clear any data caches if used
+        st.cache_data.clear()
         st.rerun()
 
     if selected_account:
         open_trades = tm.get_trades(selected_account, "Open")
         
         if not open_trades.empty:
+            # --- 1. TOTAL SUMMARY (Active) ---
+            total_eval_amt = 0
+            total_net_pnl = 0
+            total_fee = 0
+            
+            # Pre-calculate totals
+            # Note: We need to fetch prices for all to get accurate total
+            # For performance, we might want to optimize this, but loop is fine for small N
+            
+            summary_data = []
+            
             for idx, row in open_trades.iterrows():
-                # Use stock name if available
+                curr_price = tm.fetch_current_price(row['Symbol'])
+                curr_price = float(curr_price) if curr_price else float(row['EntryPrice'])
+                
+                qty = int(row['Quantity'])
+                entry_price = float(row['EntryPrice'])
+                eval_amt = curr_price * qty
+                
+                # Fee: 0.23% of Eval Amount
+                fee = eval_amt * 0.0023
+                
+                gross_pnl = (curr_price * qty) - (entry_price * qty)
+                net_pnl = gross_pnl - fee
+                
+                total_eval_amt += eval_amt
+                total_net_pnl += net_pnl
+                total_fee += fee
+                
+                summary_data.append({
+                    "TradeID": row['TradeID'],
+                    "CurrentPrice": curr_price,
+                    "NetPnL": net_pnl,
+                    "Fee": fee
+                })
+            
+            # Display Total Summary
+            s1, s2, s3 = st.columns(3)
+            s1.metric("총 평가 금액", f"₩{int(total_eval_amt):,}")
+            s2.metric("예상 수수료 (0.23%)", f"₩{int(total_fee):,}")
+            s3.metric("총 평가 손익 (Net)", f"₩{int(total_net_pnl):,}", 
+                      delta_color="normal" if total_net_pnl == 0 else "inverse")
+            
+            st.divider()
+
+            # --- 2. TRADE LIST ---
+            # Re-iterate or use summary_data
+            for i, row in open_trades.iterrows():
+                # Match pre-calculated data
+                data = next((item for item in summary_data if item["TradeID"] == row['TradeID']), None)
+                curr_price = data['CurrentPrice']
+                net_pnl = data['NetPnL']
+                fee = data['Fee']
+                
                 stock_name = tm.get_stock_name(row['Symbol'])
                 title_label = f"{stock_name} ({row['Symbol']})" if stock_name else row['Symbol']
                 
-                # Use a unique key for each expander to manage state
-                with st.expander(f"{title_label} - {row['EntryDate']} ({row['Quantity']}주)", expanded=True):
+                with st.expander(f"{title_label} - {row['EntryDate']} (PnL: ₩{int(net_pnl):,})", expanded=True):
                     
-                    # 1. Main Info Display
-                    tc1, tc2, tc3, tc4 = st.columns(4)
+                    tc1, tc2, tc3, tc4 = st.columns([1.5, 1.2, 1.5, 1.2]) 
                     
-                    # Fetch Current Price
-                    curr_price = tm.fetch_current_price(row['Symbol'])
-                    
-                    # Fallback if fetch fails
-                    display_price = float(curr_price) if curr_price else float(row['EntryPrice'])
-                    
-                    # Calc Metrics
                     entry_price = float(row['EntryPrice'])
-                    qty = int(row['Quantity'])
                     sl = float(row['StopLoss'])
                     
-                    pnl_pct = (display_price - entry_price) / entry_price * 100
-                    pnl_amt = (display_price - entry_price) * qty
+                    pnl_pct = (net_pnl / (entry_price * int(row['Quantity']))) * 100
                     
                     risk_range = abs(entry_price - sl)
-                    r_multiple = (display_price - entry_price) / risk_range if risk_range else 0
+                    r_multiple = (curr_price - entry_price) / risk_range if risk_range else 0
                     
-                    # Color for Price
-                    price_delta_color = "normal"
-                    if display_price > entry_price: price_delta_color = "inverse" # Green usually
-                    
-                    tc1.metric("현재가", f"{display_price:,.0f}", f"{pnl_pct:.2f}%")
+                    tc1.metric("현재가", f"{curr_price:,.0f}", f"{pnl_pct:.2f}% (Net)")
                     tc2.metric("R-배수", f"{r_multiple:.2f}R", delta_color="off")
-                    tc3.metric("평가 손익", f"₩{int(pnl_amt):,}")
+                    tc3.metric("평가 손익 (수수료후)", f"₩{int(net_pnl):,}")
                     
-                    # Close Button (Quick Action)
-                    if tc4.button("⚡ 포지션 청산", key=f"btn_close_{row['TradeID']}"):
-                        tm.close_trade(row['TradeID'], display_price)
-                        st.success("청산 완료!")
-                        st.rerun()
+                    # --- ACTION BUTTONS (Col 4) ---
+                    with tc4:
+                        ac1, ac2 = st.columns(2)
+                        # Toggle Edit State logic using session state
+                        edit_key = f"edit_mode_{row['TradeID']}"
+                        if ac1.button("✏️", key=f"btn_edit_{row['TradeID']}", help="수정 모드"):
+                            st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+                            st.rerun()
+                            
+                        # Close Trade
+                        if ac2.button("⚡", key=f"btn_close_{row['TradeID']}", help="포지션 청산"):
+                            tm.close_trade(row['TradeID'], curr_price)
+                            st.success("청산 완료!")
+                            st.rerun()
+                            
+                    # --- EDIT FORM (Conditional) ---
+                    if st.session_state.get(f"edit_mode_{row['TradeID']}", False):
+                        st.info("✏️ 포지션 수정 모드")
+                        with st.form(key=f"edit_form_{row['TradeID']}"):
+                            ec1, ec2, ec3, ec4 = st.columns(4)
+                            new_entry = ec1.number_input("매수가 수정", value=entry_price)
+                            new_qty = ec2.number_input("수량 수정", value=int(row['Quantity']), step=1)
+                            new_sl = ec3.number_input("손절가 수정", value=sl)
+                            new_note = ec4.text_input("메모", value=row['Strategy'])
+                            
+                            c_btn1, c_btn2 = st.columns([1, 1])
+                            if c_btn1.form_submit_button("💾 저장"):
+                                tm.update_trade(row['TradeID'], {
+                                    "EntryPrice": new_entry,
+                                    "Quantity": new_qty, 
+                                    "StopLoss": new_sl,
+                                    "Strategy": new_note
+                                })
+                                st.session_state[f"edit_mode_{row['TradeID']}"] = False
+                                st.success("수정되었습니다.")
+                                st.rerun()
+                                
+                            if c_btn2.form_submit_button("🗑️ 삭제 (주의)"):
+                                tm.delete_trade(row['TradeID'])
+                                st.success("삭제되었습니다.")
+                                st.rerun()
 
                     # Progress Bar
                     progress_val = min(max((r_multiple + 1.0) / 4.0, 0.0), 1.0)
                     st.progress(progress_val)
                     
-                    # 2. Management Menu (Edit/Delete)
-                    st.divider()
-                    m_col1, m_col2 = st.columns([1, 5])
-                    action_type = m_col1.selectbox("관리 메뉴", ["보기", "수정 (Edit)", "삭제 (Delete)"], key=f"act_{row['TradeID']}")
+                    st.caption(f"진입: {entry_price:,.0f} | 손절: {sl:,.0f} | 리스크: ₩{row['RiskAmount']:,} | 예상 수수료: ₩{int(fee):,}")
                     
-                    if action_type == "수정 (Edit)":
-                        with m_col2:
-                            with st.form(key=f"edit_form_{row['TradeID']}"):
-                                new_qty = st.number_input("수량 수정", value=qty, step=1)
-                                new_sl = st.number_input("손절가 수정", value=sl)
-                                new_note = st.text_input("메모/전략 수정", value=row['Strategy'])
-                                
-                                if st.form_submit_button("수정 내역 저장"):
-                                    tm.update_trade(row['TradeID'], {
-                                        "Quantity": new_qty, 
-                                        "StopLoss": new_sl,
-                                        "Strategy": new_note
-                                    })
-                                    st.success("수정되었습니다.")
-                                    st.rerun()
-                                    
-                    elif action_type == "삭제 (Delete)":
-                        with m_col2:
-                            st.warning("정말로 이 기록을 삭제하시겠습니까? (복구 불가)")
-                            if st.button("🗑️ 영구 삭제 확인", key=f"del_confirm_{row['TradeID']}"):
-                                tm.delete_trade(row['TradeID'])
-                                st.success("삭제되었습니다.")
-                                st.rerun()
-                                
-                    st.caption(f"진입: {entry_price:,.0f} | 손절: {sl:,.0f} | 리스크: ₩{row['RiskAmount']:,}")
                     if not curr_price:
-                        st.caption("⚠️ 현재가를 불러올 수 없습니다. 장 마감 시간이거나 종목 코드를 확인하세요.")
+                        st.caption("⚠️ 현재가를 불러올 수 없습니다.")
 
         else:
             st.info("현재 보유 중인 주식이 없습니다.")
@@ -314,83 +360,121 @@ with tab2:
 # === TAB 3: STATS ===
 with tab3:
     st.subheader("매매 성과 분석")
-    if selected_account:
-        history = tm.get_trades(selected_account, "Closed")
+    
+    # Sub-tabs for Stats
+    stat_type = st.radio("보기 모드", ["📊 진행 중 (Active)", "📜 매매 기록 (Closed)"], horizontal=True)
+    
+    if stat_type == "📊 진행 중 (Active)":
+        # Filter Logic: All Accounts or Specific
+        filter_opts = ["전체 (All Accounts)"] + account_names
+        target_account_filter = st.selectbox("계좌 필터", filter_opts, index=0)
         
-        if not history.empty:
-            # Sort by Exit Date (descending)
-            if 'ExitDate' in history.columns:
-                history['ExitDate'] = pd.to_datetime(history['ExitDate'], errors='coerce')
-                history = history.sort_values("ExitDate", ascending=False)
+        # Determine query param
+        q_acc = None if target_account_filter == "전체 (All Accounts)" else target_account_filter
+        
+        active_df = tm.get_trades(q_acc, "Open")
+        
+        if not active_df.empty:
+            # Calculate summary
+            st.caption("현재 보유 중인 종목들의 현황입니다.")
             
-            # --- KPIs ---
-            total_pnl = history['PnL'].sum()
-            winning_trades = len(history[history['PnL'] > 0])
-            total_trades_count = len(history)
-            win_rate = (winning_trades / total_trades_count) * 100 if total_trades_count > 0 else 0
-            avg_r = history['R_Multiple'].mean()
-            
-            k1, k2, k3 = st.columns(3)
-            k1.metric("총 실현 손익", f"₩{int(total_pnl):,}")
-            k2.metric("승률 (Win Rate)", f"{win_rate:.1f}%")
-            k3.metric("평균 R-배수", f"{avg_r:.2f}R")
-            
-            # --- EQUITY CURVE ---
-            history_chart = history.sort_values("ExitDate") # Chart needs ascending
-            history_chart['CumulativePnL'] = history_chart['PnL'].cumsum() + float(acc_row['InitialBalance'])
-            fig = px.line(history_chart, x='ExitDate', y='CumulativePnL', title="자산 증감 (Equity Curve)", markers=True)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            st.divider()
-            st.subheader("📜 매매 기록 (History)")
-            
-            # --- HISTORY LIST (CARD VIEW) ---
-            for idx, row in history.iterrows():
-                # Get Stock Name
+            summary_list = []
+            for idx, row in active_df.iterrows():
+                curr = tm.fetch_current_price(row['Symbol'])
+                curr = float(curr) if curr else float(row['EntryPrice'])
+                entry = float(row['EntryPrice'])
+                qty = int(row['Quantity'])
+                
+                # 0.23% Fee logic
+                fee = (curr * qty) * 0.0023
+                net_pnl = ((curr - entry) * qty) - fee
+                
                 stock_name = tm.get_stock_name(row['Symbol'])
-                title_label = f"{stock_name} ({row['Symbol']})" if stock_name else row['Symbol']
                 
-                # Determine Color card based on PnL
-                border_color = "🟢" if row['PnL'] > 0 else "🔴" if row['PnL'] < 0 else "⚪"
-                
-                with st.expander(f"{border_color} {title_label} - {row['ExitDate'].strftime('%Y-%m-%d') if pd.notnull(row['ExitDate']) else '-'} (PnL: ₩{int(row['PnL']):,})"):
-                    
-                    hc1, hc2, hc3, hc4 = st.columns(4)
-                    hc1.metric("진입가", f"{float(row['EntryPrice']):,.0f}")
-                    hc2.metric("청산가", f"{float(row['ExitPrice']):,.0f}")
-                    hc3.metric("R-배수", f"{float(row['R_Multiple']):.2f}R", 
-                               delta="WIN" if row['PnL'] > 0 else "LOSS", delta_color="normal")
-                    hc4.metric("실현 손익", f"₩{int(row['PnL']):,}")
-                    
-                    # Manage Menu (Edit/Delete)
-                    st.divider()
-                    h_m_col1, h_m_col2 = st.columns([1, 5])
-                    h_action = h_m_col1.selectbox("기록 관리", ["보기", "수정", "삭제"], key=f"h_act_{row['TradeID']}")
-                    
-                    if h_action == "수정":
-                        with h_m_col2:
-                            with st.form(key=f"h_edit_{row['TradeID']}"):
-                                h_new_exit = st.number_input("청산가 수정", value=float(row['ExitPrice']))
-                                h_new_pnl = st.number_input("손익 수정 (자동 계산 안됨)", value=float(row['PnL']))
-                                h_new_note = st.text_input("메모", value=row['Strategy'])
-                                
-                                if st.form_submit_button("수정 저장"):
-                                    tm.update_trade(row['TradeID'], {
-                                        "ExitPrice": h_new_exit,
-                                        "PnL": h_new_pnl,
-                                        "Strategy": h_new_note
-                                    })
-                                    st.success("수정되었습니다.")
-                                    st.rerun()
-                                    
-                    elif h_action == "삭제":
-                        with h_m_col2:
-                            if st.button("🗑️ 기록 삭제", key=f"h_del_{row['TradeID']}"):
-                                tm.delete_trade(row['TradeID'])
-                                st.success("삭제되었습니다.")
-                                st.rerun()
-
+                summary_list.append({
+                    "Account": row['AccountID'],
+                    "종목명": stock_name,
+                    "Symbol": row['Symbol'],
+                    "매수가": f"{entry:,.0f}",
+                    "현재가": f"{curr:,.0f}",
+                    "수량": qty,
+                    "평가손익(Net)": int(net_pnl),
+                    "수익률": f"{(net_pnl/(entry*qty)*100):.2f}%"
+                })
+            
+            st.dataframe(pd.DataFrame(summary_list))
         else:
-            st.info("아직 완료된 매매 기록이 없습니다.")
+            st.info("진행 중인 매매가 없습니다.")
+            
     else:
-        st.warning("계좌를 먼저 선택해주세요.")
+        if selected_account:
+            history = tm.get_trades(selected_account, "Closed")
+            
+            if not history.empty:
+                # Sort by Exit Date (descending)
+                if 'ExitDate' in history.columns:
+                    history['ExitDate'] = pd.to_datetime(history['ExitDate'], errors='coerce')
+                    history = history.sort_values("ExitDate", ascending=False)
+                
+                # --- KPIs ---
+                total_pnl = history['PnL'].sum()
+                winning_trades = len(history[history['PnL'] > 0])
+                total_trades_count = len(history)
+                win_rate = (winning_trades / total_trades_count) * 100 if total_trades_count > 0 else 0
+                avg_r = history['R_Multiple'].mean()
+                
+                k1, k2, k3 = st.columns(3)
+                k1.metric("총 실현 손익", f"₩{int(total_pnl):,}")
+                k2.metric("승률 (Win Rate)", f"{win_rate:.1f}%")
+                k3.metric("평균 R-배수", f"{avg_r:.2f}R")
+                
+                # --- EQUITY CURVE ---
+                history_chart = history.sort_values("ExitDate")
+                history_chart['CumulativePnL'] = history_chart['PnL'].cumsum() + float(acc_row['InitialBalance'])
+                fig = px.line(history_chart, x='ExitDate', y='CumulativePnL', title="자산 증감 (Equity Curve)", markers=True)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                st.divider()
+                
+                # --- HISTORY LIST (CARD VIEW) ---
+                for idx, row in history.iterrows():
+                    stock_name = tm.get_stock_name(row['Symbol'])
+                    title_label = f"{stock_name} ({row['Symbol']})" if stock_name else row['Symbol']
+                    border_color = "🟢" if row['PnL'] > 0 else "🔴" if row['PnL'] < 0 else "⚪"
+                    
+                    with st.expander(f"{border_color} {title_label} - {row['ExitDate'].strftime('%Y-%m-%d') if pd.notnull(row['ExitDate']) else '-'} (PnL: ₩{int(row['PnL']):,})"):
+                        
+                        hc1, hc2, hc3, hc4 = st.columns(4)
+                        hc1.metric("진입가", f"{float(row['EntryPrice']):,.0f}")
+                        hc2.metric("청산가", f"{float(row['ExitPrice']):,.0f}")
+                        hc3.metric("R-배수", f"{float(row['R_Multiple']):.2f}R", 
+                                   delta="WIN" if row['PnL'] > 0 else "LOSS", delta_color="normal")
+                        hc4.metric("실현 손익", f"₩{int(row['PnL']):,}")
+                        
+                        # Manage Menu
+                        st.markdown("---")
+                        h_m_col1, h_m_col2 = st.columns([1, 4])
+                        h_action = h_m_col1.selectbox("기록 관리", ["메뉴 선택", "수정", "삭제"], key=f"h_act_{row['TradeID']}", label_visibility="collapsed")
+                        
+                        if h_action == "수정":
+                            with h_m_col2:
+                                with st.form(key=f"h_edit_{row['TradeID']}"):
+                                    h_new_exit = st.number_input("청산가", value=float(row['ExitPrice']))
+                                    h_new_pnl = st.number_input("손익", value=float(row['PnL']))
+                                    h_new_note = st.text_input("메모", value=row['Strategy'])
+                                    if st.form_submit_button("수정 저장"):
+                                        tm.update_trade(row['TradeID'], {"ExitPrice": h_new_exit, "PnL": h_new_pnl, "Strategy": h_new_note})
+                                        st.success("수정됨")
+                                        st.rerun()
+                                        
+                        elif h_action == "삭제":
+                            with h_m_col2:
+                                if st.button("🗑️ 기록 삭제", key=f"h_del_{row['TradeID']}"):
+                                    tm.delete_trade(row['TradeID'])
+                                    st.success("삭제됨")
+                                    st.rerun()
+
+            else:
+                st.info("아직 완료된 매매 기록이 없습니다.")
+        else:
+            st.warning("계좌를 먼저 선택해주세요.")

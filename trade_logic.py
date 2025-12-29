@@ -133,6 +133,12 @@ class TradeManager:
         return True, "Account added"
 
     def delete_account(self, account_id):
+        # 1. Delete associated trades
+        t_df = self._load_df(TRADES_FILE)
+        t_df = t_df[t_df['AccountID'] != str(account_id)]
+        self._save_df(t_df, TRADES_FILE)
+        
+        # 2. Delete account
         df = self.get_accounts()
         df = df[df['AccountID'] != account_id]
         self._save_df(df, ACCOUNTS_FILE)
@@ -176,6 +182,16 @@ class TradeManager:
 
         if account_id:
             df = df[df['AccountID'] == str(account_id)] # Ensure str comparison
+        
+        # Filter out orphans (AccountID not in Accounts file)
+        acc_df = self.get_accounts()
+        valid_ids = []
+        if not acc_df.empty:
+            valid_ids = acc_df['AccountID'].astype(str).tolist()
+        
+        # Always filter. If valid_ids is empty, this returns empty df (which is correct if no accounts)
+        df = df[df['AccountID'].astype(str).isin(valid_ids)]
+            
         if status:
             df = df[df['Status'] == status]
         return df
@@ -219,20 +235,27 @@ class TradeManager:
         qty = int(df.at[idx, 'Quantity'])
         sl = float(df.at[idx, 'StopLoss'])
         
-        pnl = (exit_price - entry) * qty
+        # Fee Calculation (0.23% based on user feedback)
+        # Tax ~0.20% + Fee ~0.03%
+        exit_amt = exit_price * qty
+        fee = exit_amt * 0.0023
+        
+        gross_pnl = (exit_price - entry) * qty
+        net_pnl = gross_pnl - fee
+        
         risk_dist = abs(entry - sl)
         r_mult = (exit_price - entry) / risk_dist if risk_dist != 0 else 0
 
         df.at[idx, 'Status'] = "Closed"
         df.at[idx, 'ExitPrice'] = exit_price
         df.at[idx, 'ExitDate'] = datetime.now().strftime("%Y-%m-%d")
-        df.at[idx, 'PnL'] = pnl
+        df.at[idx, 'PnL'] = net_pnl
         df.at[idx, 'R_Multiple'] = round(r_mult, 2)
         
         self._save_df(df, TRADES_FILE)
         
         acc_id = df.at[idx, 'AccountID']
-        self.update_account_balance(acc_id, pnl)
+        self.update_account_balance(acc_id, net_pnl)
         
         return True
 
