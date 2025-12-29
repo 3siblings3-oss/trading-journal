@@ -92,8 +92,20 @@ with st.sidebar.expander("➕ 새 계좌 추가"):
 acc_row = None
 if selected_account:
     acc_row = accounts[accounts['AccountID'] == selected_account].iloc[0]
+    current_balance = float(acc_row['CurrentBalance'])
+    
+    # Calculate Invested Amount (Active Trades)
+    active_trades = tm.get_trades(selected_account, "Open")
+    invested_amt = 0.0
+    if not active_trades.empty:
+        invested_amt = (active_trades['EntryPrice'] * active_trades['Quantity']).sum()
+    
+    # Deposit (Available Cash) = Total Balance - Invested Amount
+    deposit = current_balance - invested_amt
+    
     st.sidebar.markdown("---")
-    st.sidebar.metric("현재 잔고 (예수금)", f"₩{int(acc_row['CurrentBalance']):,}")
+    st.sidebar.metric("예수금 (Deposit)", f"₩{int(deposit):,}")
+    st.sidebar.metric("계좌 총 잔고 (Total)", f"₩{int(current_balance):,}")
     st.sidebar.caption(f"증권사: {acc_row['Broker']}")
 
 # --- MAIN CONTENT ---
