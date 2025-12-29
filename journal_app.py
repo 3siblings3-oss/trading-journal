@@ -1,7 +1,7 @@
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import math
 from trade_logic import TradeManager
 from datetime import datetime
 
@@ -255,14 +255,20 @@ with tab2:
                 curr_price = tm.fetch_current_price(row['Symbol'])
                 curr_price = float(curr_price) if curr_price else float(row['EntryPrice'])
                 
-                qty = int(row['Quantity'])
                 entry_price = float(row['EntryPrice'])
+                qty = int(row['Quantity'])
+                entry_amt = entry_price * qty
                 eval_amt = curr_price * qty
                 
-                # Fee: 0.23% of Eval Amount
-                fee = eval_amt * 0.0023
+                # Fee: 0.20% Tax (Sell) + 0.015% Fee (Buy & Sell)
+                # Kiwoom logic: Fee floor 10, Tax floor 1
+                buy_fee = math.floor((entry_amt * 0.00015) / 10) * 10
+                sell_fee = math.floor((eval_amt * 0.00015) / 10) * 10
+                tax = math.floor(eval_amt * 0.002)
                 
-                gross_pnl = (curr_price * qty) - (entry_price * qty)
+                fee = buy_fee + sell_fee + tax
+                
+                gross_pnl = eval_amt - entry_amt
                 net_pnl = gross_pnl - fee
                 
                 total_eval_amt += eval_amt
@@ -279,7 +285,7 @@ with tab2:
             # Display Total Summary
             s1, s2, s3 = st.columns(3)
             s1.metric("총 평가 금액", f"₩{int(total_eval_amt):,}")
-            s2.metric("예상 수수료 (0.23%)", f"₩{int(total_fee):,}")
+            s2.metric("예상 수수료 (세금+0.015%)", f"₩{int(total_fee):,}")
             s3.metric("총 평가 손익 (Net)", f"₩{int(total_net_pnl):,}", 
                       delta_color="normal" if total_net_pnl == 0 else "inverse")
             
@@ -400,12 +406,20 @@ with tab3:
                 entry = float(row['EntryPrice'])
                 qty = int(row['Quantity'])
                 
-                # 0.23% Fee logic
-                fee = (curr * qty) * 0.0023
-                net_pnl = ((curr - entry) * qty) - fee
+                entry_amt = entry * qty
+                curr_amt = curr * qty
+                
+                # Fee logic: Tax 0.2% + Fee 0.015% (Kiwoom Floor Logic)
+                buy_fee = math.floor((entry_amt * 0.00015) / 10) * 10
+                sell_fee = math.floor((curr_amt * 0.00015) / 10) * 10
+                tax = math.floor(curr_amt * 0.002)
+                
+                fee = buy_fee + sell_fee + tax
+                
+                net_pnl = (curr_amt - entry_amt) - fee
                 
                 # Accumulate Totals
-                total_buy_amt += (entry * qty)
+                total_buy_amt += entry_amt
                 total_net_pnl += net_pnl
                 
                 stock_name = tm.get_stock_name(row['Symbol'])

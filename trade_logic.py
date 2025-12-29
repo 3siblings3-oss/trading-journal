@@ -235,13 +235,24 @@ class TradeManager:
         qty = int(df.at[idx, 'Quantity'])
         sl = float(df.at[idx, 'StopLoss'])
         
-        # Fee Calculation (0.23% based on user feedback)
-        # Tax ~0.20% + Fee ~0.03%
-        exit_amt = exit_price * qty
-        fee = exit_amt * 0.0023
+        # Fee Calculation (Updated based on user feedback)
+        # Tax: 0.20% (Sell only)
+        # Fee: 0.015% (Buy & Sell)
+        # Fee Calculation (Kiwoom Standard: Floor to 10 won for Fee, 1 won for Tax)
+        # Tax: 0.20% (Sell only) | Fee: 0.015% (Buy & Sell)
+        import math
         
-        gross_pnl = (exit_price - entry) * qty
-        net_pnl = gross_pnl - fee
+        exit_amt = exit_price * qty
+        entry_amt = entry * qty
+        
+        buy_fee = math.floor((entry_amt * 0.00015) / 10) * 10
+        sell_fee = math.floor((exit_amt * 0.00015) / 10) * 10
+        tax = math.floor(exit_amt * 0.002)
+        
+        total_fee = buy_fee + sell_fee + tax
+        
+        gross_pnl = exit_amt - entry_amt
+        net_pnl = gross_pnl - total_fee
         
         risk_dist = abs(entry - sl)
         r_mult = (exit_price - entry) / risk_dist if risk_dist != 0 else 0
