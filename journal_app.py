@@ -379,6 +379,9 @@ with tab3:
             st.caption("현재 보유 중인 종목들의 현황입니다.")
             
             summary_list = []
+            total_buy_amt = 0.0
+            total_net_pnl = 0.0
+            
             for idx, row in active_df.iterrows():
                 curr = tm.fetch_current_price(row['Symbol'])
                 curr = float(curr) if curr else float(row['EntryPrice'])
@@ -388,6 +391,10 @@ with tab3:
                 # 0.23% Fee logic
                 fee = (curr * qty) * 0.0023
                 net_pnl = ((curr - entry) * qty) - fee
+                
+                # Accumulate Totals
+                total_buy_amt += (entry * qty)
+                total_net_pnl += net_pnl
                 
                 stock_name = tm.get_stock_name(row['Symbol'])
                 
@@ -401,6 +408,16 @@ with tab3:
                     "평가손익(Net)": int(net_pnl),
                     "수익률": f"{(net_pnl/(entry*qty)*100):.2f}%"
                 })
+            
+            # Display Total Metrics
+            total_roi = (total_net_pnl / total_buy_amt * 100) if total_buy_amt > 0 else 0.0
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("총 매수 금액", f"₩{int(total_buy_amt):,}")
+            m2.metric("총 평가 손익 (Net)", f"₩{int(total_net_pnl):,}", delta=f"{int(total_net_pnl):,}")
+            m3.metric("총 수익률", f"{total_roi:.2f}%", delta=f"{total_roi:.2f}%")
+            
+            st.divider()
             
             st.dataframe(pd.DataFrame(summary_list))
         else:
